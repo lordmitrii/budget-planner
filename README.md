@@ -25,7 +25,6 @@ Desktop app for monthly balance planning.
 ## Run in development
 
 ```bash
-cd desktop
 npm install
 npm run tauri:dev
 ```
@@ -33,30 +32,27 @@ npm run tauri:dev
 Frontend only:
 
 ```bash
-cd desktop
 npm run dev
 ```
 
 ## Build production app
 
 ```bash
-cd desktop
 npm install
 npm run tauri:build
 ```
 
 Generated installers/binaries are under:
 
-- `desktop/src-tauri/target/release/bundle/`
+- `src-tauri/target/release/bundle/`
 
 ## Optional checks
 
 ```bash
-cd desktop
 npm test
 ```
 
 ```bash
-cd desktop/src-tauri
+cd src-tauri
 cargo test --no-default-features
 ```
