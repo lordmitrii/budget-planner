@@ -185,6 +185,27 @@ export interface TsvImportInput {
   tsv: string;
 }
 
+export interface FxSettingsPayload {
+  fallbackEurToGbp: number;
+  fallbackUsdToGbp: number;
+  latestMonth?: string | null;
+  latestEurToGbp?: number | null;
+  latestUsdToGbp?: number | null;
+}
+
+export interface FxFallbackInput {
+  fallbackEurToGbp: number;
+  fallbackUsdToGbp: number;
+}
+
+export interface FxRefreshResult {
+  month: string;
+  eurToGbp: number;
+  usdToGbp: number;
+  source: "live" | "fallback";
+  message: string;
+}
+
 export interface ImportResult {
   importedAccounts: number;
   importedHistoryPoints: number;

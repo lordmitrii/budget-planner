@@ -7,6 +7,7 @@ import { useAppStore, type Screen } from "@/state/useAppStore";
 import type {
   AccountInput,
   DriverInput,
+  FxFallbackInput,
   MonthlyCloseInput,
   QuickCorrectionInput,
   SeedImportInput,
@@ -19,6 +20,7 @@ import TimelinePanel from "@/components/TimelinePanel";
 import SnapshotPanel from "@/components/SnapshotPanel";
 import CorrectionsPanel from "@/components/CorrectionsPanel";
 import DataPanel from "@/components/DataPanel";
+import SettingsPanel from "@/components/SettingsPanel";
 
 const screens: Array<{ id: Screen; label: string }> = [
   { id: "overview", label: "Overview" },
@@ -28,6 +30,7 @@ const screens: Array<{ id: Screen; label: string }> = [
   { id: "snapshot", label: "Snapshot" },
   { id: "corrections", label: "Corrections" },
   { id: "data", label: "Data" },
+  { id: "settings", label: "Settings" },
 ];
 
 export default function App() {
@@ -57,11 +60,18 @@ export default function App() {
     enabled: initQuery.isSuccess,
   });
 
+  const fxSettingsQuery = useQuery({
+    queryKey: ["fx-settings"],
+    queryFn: api.getFxSettings,
+    enabled: initQuery.isSuccess,
+  });
+
   const refreshAll = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
       queryClient.invalidateQueries({ queryKey: ["accounts"] }),
       queryClient.invalidateQueries({ queryKey: ["manager-snapshot"] }),
+      queryClient.invalidateQueries({ queryKey: ["fx-settings"] }),
     ]);
   };
 
@@ -121,6 +131,16 @@ export default function App() {
 
   const importBackupMutation = useMutation({
     mutationFn: (json: string) => api.importBackup(json),
+    onSuccess: refreshAll,
+  });
+
+  const updateFxFallbacksMutation = useMutation({
+    mutationFn: (input: FxFallbackInput) => api.updateFxFallbacks(input),
+    onSuccess: refreshAll,
+  });
+
+  const refreshFxRatesMutation = useMutation({
+    mutationFn: api.refreshFxRates,
     onSuccess: refreshAll,
   });
 
@@ -292,6 +312,22 @@ export default function App() {
                 onExportBackup={() => exportBackupMutation.mutateAsync()}
                 onImportBackup={(json) => importBackupMutation.mutateAsync(json)}
               />
+            )}
+
+            {screen === "settings" && fxSettingsQuery.data && (
+              <SettingsPanel
+                settings={fxSettingsQuery.data}
+                onSaveFallbacks={(input) => updateFxFallbacksMutation.mutateAsync(input)}
+                onRefreshFx={() => refreshFxRatesMutation.mutateAsync()}
+              />
+            )}
+
+            {screen === "settings" && fxSettingsQuery.isLoading && (
+              <section className="panel">Loading settings...</section>
+            )}
+
+            {screen === "settings" && fxSettingsQuery.isError && (
+              <section className="panel error">Failed to load settings.</section>
             )}
           </>
         )}

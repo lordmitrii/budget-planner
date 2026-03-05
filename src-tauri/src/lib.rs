@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use chrono::{Datelike, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -12,6 +13,8 @@ use uuid::Uuid;
 const DEFAULT_EUR_TO_GBP: f64 = 0.86;
 const DEFAULT_USD_TO_GBP: f64 = 0.79;
 const DEFAULT_HORIZON_MONTHS: u8 = 24;
+const FX_FALLBACK_EUR_TO_GBP_KEY: &str = "fx_fallback_eur_to_gbp";
+const FX_FALLBACK_USD_TO_GBP_KEY: &str = "fx_fallback_usd_to_gbp";
 
 #[derive(Default)]
 pub struct AppState {
@@ -230,6 +233,33 @@ pub struct TsvImportInput {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FxSettingsPayload {
+    pub fallback_eur_to_gbp: f64,
+    pub fallback_usd_to_gbp: f64,
+    pub latest_month: Option<String>,
+    pub latest_eur_to_gbp: Option<f64>,
+    pub latest_usd_to_gbp: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FxFallbackInput {
+    pub fallback_eur_to_gbp: f64,
+    pub fallback_usd_to_gbp: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FxRefreshResult {
+    pub month: String,
+    pub eur_to_gbp: f64,
+    pub usd_to_gbp: f64,
+    pub source: String,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ImportResult {
     pub imported_accounts: usize,
     pub imported_history_points: usize,
@@ -392,6 +422,12 @@ fn migrate(conn: &Connection) -> Result<(), String> {
     if get_setting(conn, "base_currency")?.is_none() {
         set_setting(conn, "base_currency", "GBP")?;
     }
+    if get_setting(conn, FX_FALLBACK_EUR_TO_GBP_KEY)?.is_none() {
+        set_setting(conn, FX_FALLBACK_EUR_TO_GBP_KEY, &DEFAULT_EUR_TO_GBP.to_string())?;
+    }
+    if get_setting(conn, FX_FALLBACK_USD_TO_GBP_KEY)?.is_none() {
+        set_setting(conn, FX_FALLBACK_USD_TO_GBP_KEY, &DEFAULT_USD_TO_GBP.to_string())?;
+    }
     Ok(())
 }
 
@@ -415,6 +451,168 @@ fn get_base_currency(conn: &Connection) -> Result<String, String> {
     Ok(get_setting(conn, "base_currency")?.unwrap_or_else(|| "GBP".to_string()))
 }
 
+fn parse_f64_setting(value: Option<String>, fallback: f64) -> f64 {
+    value
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| *v > 0.0)
+        .unwrap_or(fallback)
+}
+
+fn get_fallback_fx_rates(conn: &Connection) -> Result<(f64, f64), String> {
+    let eur = parse_f64_setting(get_setting(conn, FX_FALLBACK_EUR_TO_GBP_KEY)?, DEFAULT_EUR_TO_GBP);
+    let usd = parse_f64_setting(get_setting(conn, FX_FALLBACK_USD_TO_GBP_KEY)?, DEFAULT_USD_TO_GBP);
+    Ok((eur, usd))
+}
+
+fn upsert_fx_rate(conn: &Connection, month: &str, currency: &str, to_gbp: f64) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO fx_rates_monthly(month, currency, to_gbp) VALUES (?1, ?2, ?3)
+         ON CONFLICT(month, currency) DO UPDATE SET to_gbp = excluded.to_gbp",
+        params![month, currency, to_gbp],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct FrankfurterLatestResponse {
+    rates: HashMap<String, f64>,
+}
+
+fn fetch_live_fx_rates() -> Result<(f64, f64), String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(6))
+        .build()
+        .map_err(|e| format!("Could not initialize FX HTTP client: {e}"))?;
+
+    let response = client
+        .get("https://api.frankfurter.app/latest?from=GBP&to=EUR,USD")
+        .send()
+        .map_err(|e| format!("Live FX request failed: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("Live FX request returned status {}", response.status()));
+    }
+
+    let payload: FrankfurterLatestResponse = response
+        .json()
+        .map_err(|e| format!("Could not parse live FX response: {e}"))?;
+
+    let eur_per_gbp = payload
+        .rates
+        .get("EUR")
+        .copied()
+        .ok_or_else(|| "Live FX response missing EUR rate".to_string())?;
+    let usd_per_gbp = payload
+        .rates
+        .get("USD")
+        .copied()
+        .ok_or_else(|| "Live FX response missing USD rate".to_string())?;
+    if eur_per_gbp <= 0.0 || usd_per_gbp <= 0.0 {
+        return Err("Live FX response returned non-positive rate(s)".to_string());
+    }
+
+    Ok((1.0 / eur_per_gbp, 1.0 / usd_per_gbp))
+}
+
+fn refresh_fx_rates_internal(conn: &Connection, month: &str) -> Result<FxRefreshResult, String> {
+    let (fallback_eur, fallback_usd) = get_fallback_fx_rates(conn)?;
+    let (eur_to_gbp, usd_to_gbp, source, message) = match fetch_live_fx_rates() {
+        Ok((eur, usd)) => (
+            eur,
+            usd,
+            "live".to_string(),
+            format!("Fetched live FX and saved for {month}."),
+        ),
+        Err(err) => (
+            fallback_eur,
+            fallback_usd,
+            "fallback".to_string(),
+            format!("Live FX failed ({err}). Used fallback settings for {month}."),
+        ),
+    };
+
+    upsert_fx_rate(conn, month, "GBP", 1.0)?;
+    upsert_fx_rate(conn, month, "EUR", eur_to_gbp)?;
+    upsert_fx_rate(conn, month, "USD", usd_to_gbp)?;
+
+    Ok(FxRefreshResult {
+        month: month.to_string(),
+        eur_to_gbp,
+        usd_to_gbp,
+        source,
+        message,
+    })
+}
+
+fn latest_fx_settings_payload(conn: &Connection) -> Result<FxSettingsPayload, String> {
+    let (fallback_eur, fallback_usd) = get_fallback_fx_rates(conn)?;
+    let latest_month = conn
+        .query_row(
+            "SELECT month FROM fx_rates_monthly WHERE currency = 'EUR' ORDER BY month DESC LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    let (latest_eur, latest_usd) = if let Some(month) = latest_month.clone() {
+        let eur = conn
+            .query_row(
+                "SELECT to_gbp FROM fx_rates_monthly WHERE month = ?1 AND currency = 'EUR' LIMIT 1",
+                params![month.clone()],
+                |row| row.get::<_, f64>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let usd = conn
+            .query_row(
+                "SELECT to_gbp FROM fx_rates_monthly WHERE month = ?1 AND currency = 'USD' LIMIT 1",
+                params![month],
+                |row| row.get::<_, f64>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        (eur, usd)
+    } else {
+        (None, None)
+    };
+
+    Ok(FxSettingsPayload {
+        fallback_eur_to_gbp: fallback_eur,
+        fallback_usd_to_gbp: fallback_usd,
+        latest_month,
+        latest_eur_to_gbp: latest_eur,
+        latest_usd_to_gbp: latest_usd,
+    })
+}
+
+fn ensure_current_month_fx(conn: &Connection) -> Result<(), String> {
+    let month = today_month();
+    let eur_exists = conn
+        .query_row(
+            "SELECT 1 FROM fx_rates_monthly WHERE month = ?1 AND currency = 'EUR' LIMIT 1",
+            params![month.clone()],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .is_some();
+    let usd_exists = conn
+        .query_row(
+            "SELECT 1 FROM fx_rates_monthly WHERE month = ?1 AND currency = 'USD' LIMIT 1",
+            params![month.clone()],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .is_some();
+
+    if !eur_exists || !usd_exists {
+        let _ = refresh_fx_rates_internal(conn, &month)?;
+    }
+    Ok(())
+}
+
 fn get_fx_to_gbp(conn: &Connection, month: &str, currency: &str) -> Result<f64, String> {
     if currency == "GBP" {
         return Ok(1.0);
@@ -429,11 +627,13 @@ fn get_fx_to_gbp(conn: &Connection, month: &str, currency: &str) -> Result<f64, 
         .optional()
         .map_err(|e| e.to_string())?;
 
+    let (fallback_eur, fallback_usd) = get_fallback_fx_rates(conn)?;
+
     Ok(match value {
         Some(rate) if rate > 0.0 => rate,
         _ => match currency {
-            "EUR" => DEFAULT_EUR_TO_GBP,
-            "USD" => DEFAULT_USD_TO_GBP,
+            "EUR" => fallback_eur,
+            "USD" => fallback_usd,
             _ => 1.0,
         },
     })
@@ -941,6 +1141,7 @@ fn build_timeline(conn: &Connection, projection: &ProjectionResult, base_currenc
 fn init_app(state: tauri::State<AppState>) -> Result<InitPayload, String> {
     let conn = open_conn(&state)?;
     migrate(&conn)?;
+    let _ = ensure_current_month_fx(&conn);
 
     Ok(InitPayload {
         db_path: state.db_path.lock().map_err(|_| "DB path lock poisoned".to_string())?.clone(),
@@ -948,6 +1149,43 @@ fn init_app(state: tauri::State<AppState>) -> Result<InitPayload, String> {
         base_currency: get_base_currency(&conn)?,
         selected_snapshot_month: get_setting(&conn, "selected_snapshot_month")?,
     })
+}
+
+#[tauri::command]
+fn get_fx_settings(state: tauri::State<AppState>) -> Result<FxSettingsPayload, String> {
+    let conn = open_conn(&state)?;
+    migrate(&conn)?;
+    latest_fx_settings_payload(&conn)
+}
+
+#[tauri::command]
+fn update_fx_fallbacks(state: tauri::State<AppState>, input: FxFallbackInput) -> Result<FxSettingsPayload, String> {
+    let conn = open_conn(&state)?;
+    migrate(&conn)?;
+
+    if input.fallback_eur_to_gbp <= 0.0 || input.fallback_usd_to_gbp <= 0.0 {
+        return Err("Fallback rates must be greater than zero".to_string());
+    }
+
+    set_setting(
+        &conn,
+        FX_FALLBACK_EUR_TO_GBP_KEY,
+        &input.fallback_eur_to_gbp.to_string(),
+    )?;
+    set_setting(
+        &conn,
+        FX_FALLBACK_USD_TO_GBP_KEY,
+        &input.fallback_usd_to_gbp.to_string(),
+    )?;
+
+    latest_fx_settings_payload(&conn)
+}
+
+#[tauri::command]
+fn refresh_fx_rates(state: tauri::State<AppState>) -> Result<FxRefreshResult, String> {
+    let conn = open_conn(&state)?;
+    migrate(&conn)?;
+    refresh_fx_rates_internal(&conn, &today_month())
 }
 
 #[tauri::command]
@@ -1226,6 +1464,7 @@ fn tx_execute(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> Re
 fn get_dashboard(state: tauri::State<AppState>, horizon_months: u8) -> Result<DashboardPayload, String> {
     let conn = open_conn(&state)?;
     migrate(&conn)?;
+    let _ = ensure_current_month_fx(&conn);
 
     let base_currency = get_base_currency(&conn)?;
     let projection = recompute_projection_internal(&conn, horizon_months, None, true)?;
@@ -1990,6 +2229,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             init_app,
             get_dashboard,
+            get_fx_settings,
+            update_fx_fallbacks,
+            refresh_fx_rates,
             list_accounts,
             upsert_account,
             delete_account,
