@@ -509,6 +509,27 @@ fn list_corrections(conn: &Connection) -> Result<Vec<QuickCorrection>, String> {
     Ok(corrections)
 }
 
+fn load_correction_by_id(conn: &Connection, id: &str) -> Result<Option<QuickCorrection>, String> {
+    conn.query_row(
+        "SELECT id, effective_month, account_id, delta, currency, reason, created_at
+         FROM quick_corrections WHERE id = ?1",
+        params![id],
+        |row| {
+            Ok(QuickCorrection {
+                id: row.get(0)?,
+                effective_month: row.get(1)?,
+                account_id: row.get(2)?,
+                delta: row.get(3)?,
+                currency: row.get(4)?,
+                reason: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
 fn account_latest_balance(conn: &Connection, account_id: &str) -> Result<Option<f64>, String> {
     conn.query_row(
         "SELECT closing_balance FROM monthly_actual_closes WHERE account_id = ?1 ORDER BY month DESC LIMIT 1",
@@ -779,6 +800,22 @@ fn load_seed_history_actual_map(conn: &Connection, base_currency: &str) -> Resul
         out.insert(point.month_date.clone(), total_base);
     }
 
+    // Past corrections should influence historical months even when no per-account close exists.
+    for correction in list_corrections(conn)? {
+        if correction.effective_month > cutoff {
+            continue;
+        }
+        let delta_base = convert_currency(
+            conn,
+            &correction.effective_month,
+            correction.delta,
+            &correction.currency,
+            base_currency,
+        )?;
+        let entry = out.entry(correction.effective_month).or_insert(0.0);
+        *entry += delta_base;
+    }
+
     Ok(out)
 }
 
@@ -786,6 +823,20 @@ fn build_timeline(conn: &Connection, projection: &ProjectionResult, base_currenc
     let today = today_month();
     let mut month_projection_map: BTreeMap<String, Vec<&ProjectedPoint>> = BTreeMap::new();
     let seed_history_actual = load_seed_history_actual_map(conn, base_currency)?;
+    let mut correction_base_by_month: HashMap<String, f64> = HashMap::new();
+    for correction in list_corrections(conn)? {
+        let delta_base = convert_currency(
+            conn,
+            &correction.effective_month,
+            correction.delta,
+            &correction.currency,
+            base_currency,
+        )?;
+        let entry = correction_base_by_month
+            .entry(correction.effective_month)
+            .or_insert(0.0);
+        *entry += delta_base;
+    }
 
     for point in &projection.points {
         month_projection_map.entry(point.month.clone()).or_default().push(point);
@@ -837,6 +888,9 @@ fn build_timeline(conn: &Connection, projection: &ProjectionResult, base_currenc
         } else {
             None
         };
+        if let Some(value) = actual_in_base.as_mut() {
+            *value += correction_base_by_month.get(&month).copied().unwrap_or(0.0);
+        }
         if actual_in_base.is_none() {
             actual_in_base = seed_history_actual.get(&month).copied();
         }
@@ -1042,12 +1096,8 @@ fn apply_quick_correction(state: tauri::State<AppState>, input: QuickCorrectionI
 
     recompute_projection_internal(&conn, DEFAULT_HORIZON_MONTHS, None, true)?;
 
-    let correction = list_corrections(&conn)?
-        .into_iter()
-        .find(|c| c.id == correction_id)
-        .ok_or_else(|| "Failed to fetch upserted correction".to_string())?;
-
-    Ok(correction)
+    load_correction_by_id(&conn, &correction_id)?
+        .ok_or_else(|| "Failed to fetch upserted correction".to_string())
 }
 
 #[tauri::command]
@@ -1263,7 +1313,7 @@ fn get_manager_snapshot(state: tauri::State<AppState>) -> Result<ManagerSnapshot
     let previous_month = add_months(&current_month, -1)?;
     let next_month = add_months(&current_month, 1)?;
 
-    let projection = recompute_projection_internal(&conn, 3, Some(previous_month.clone()), false)?;
+    let projection = recompute_projection_internal(&conn, 2, Some(current_month.clone()), false)?;
     let projected_map: HashMap<(String, String), f64> = projection
         .points
         .iter()
@@ -1279,19 +1329,35 @@ fn get_manager_snapshot(state: tauri::State<AppState>) -> Result<ManagerSnapshot
         .into_iter()
         .filter(|account| account.is_active)
         .collect::<Vec<_>>();
+    let corrections = list_corrections(&conn)?;
 
-    let mut rows = Vec::new();
-    let mut total_previous_base = 0.0;
+    let timeline = build_timeline(&conn, &projection, &base_currency)?;
+    let previous_historical_total = timeline
+        .iter()
+        .find(|point| point.month == previous_month)
+        .and_then(|point| point.total_actual_base);
+
+    struct SnapshotWorkRow {
+        account_id: String,
+        account_name: String,
+        currency: String,
+        previous_balance: f64,
+        previous_is_actual: bool,
+        current_balance: f64,
+        current_source: String,
+        next_projected_balance: f64,
+    }
+
+    let mut rows = Vec::<SnapshotWorkRow>::new();
     let mut total_current_base = 0.0;
     let mut total_next_projected_base = 0.0;
+    let mut known_previous_actual_total_base = 0.0;
+    let mut projected_previous_total_base = 0.0;
 
     for account in accounts {
-        let projected_prev = *projected_map
-            .get(&(previous_month.clone(), account.id.clone()))
-            .unwrap_or(&0.0);
         let projected_current = *projected_map
             .get(&(current_month.clone(), account.id.clone()))
-            .unwrap_or(&projected_prev);
+            .unwrap_or(&0.0);
         let projected_next = *projected_map
             .get(&(next_month.clone(), account.id.clone()))
             .unwrap_or(&projected_current);
@@ -1299,26 +1365,45 @@ fn get_manager_snapshot(state: tauri::State<AppState>) -> Result<ManagerSnapshot
         let actual_previous = actual_close_for_month(&conn, &account.id, &previous_month)?;
         let actual_current = actual_close_for_month(&conn, &account.id, &current_month)?;
 
-        let previous_balance = actual_previous.unwrap_or(projected_prev);
-        let previous_source = if actual_previous.is_some() {
-            "actual".to_string()
-        } else {
-            "projected".to_string()
-        };
-        let current_balance = actual_current.unwrap_or(projected_current);
+        let previous_is_actual = actual_previous.is_some();
+        let mut previous_balance = actual_previous.unwrap_or_else(|| actual_current.unwrap_or(projected_current));
+        let mut current_balance = actual_current.unwrap_or(projected_current);
+
+        let previous_delta = corrections
+            .iter()
+            .filter(|c| c.effective_month == previous_month && c.account_id == account.id)
+            .try_fold(0.0, |sum, correction| {
+                let converted = convert_currency(
+                    &conn,
+                    &previous_month,
+                    correction.delta,
+                    &correction.currency,
+                    &account.currency,
+                )?;
+                Ok::<f64, String>(sum + converted)
+            })?;
+        previous_balance += previous_delta;
+
+        let current_delta = corrections
+            .iter()
+            .filter(|c| c.effective_month == current_month && c.account_id == account.id)
+            .try_fold(0.0, |sum, correction| {
+                let converted = convert_currency(
+                    &conn,
+                    &current_month,
+                    correction.delta,
+                    &correction.currency,
+                    &account.currency,
+                )?;
+                Ok::<f64, String>(sum + converted)
+            })?;
+        current_balance += current_delta;
         let current_source = if actual_current.is_some() {
             "actual".to_string()
         } else {
             "projected".to_string()
         };
 
-        total_previous_base += convert_currency(
-            &conn,
-            &previous_month,
-            previous_balance,
-            &account.currency,
-            &base_currency,
-        )?;
         total_current_base += convert_currency(
             &conn,
             &current_month,
@@ -1334,15 +1419,66 @@ fn get_manager_snapshot(state: tauri::State<AppState>) -> Result<ManagerSnapshot
             &base_currency,
         )?;
 
-        rows.push(ManagerSnapshotRow {
+        let previous_in_base = convert_currency(
+            &conn,
+            &previous_month,
+            previous_balance,
+            &account.currency,
+            &base_currency,
+        )?;
+        if previous_is_actual {
+            known_previous_actual_total_base += previous_in_base;
+        } else {
+            projected_previous_total_base += previous_in_base;
+        }
+
+        rows.push(SnapshotWorkRow {
             account_id: account.id,
             account_name: account.name,
             currency: account.currency,
             previous_balance,
-            previous_source,
+            previous_is_actual,
             current_balance,
             current_source,
             next_projected_balance: projected_next,
+        });
+    }
+
+    if let Some(previous_total_target) = previous_historical_total {
+        let projected_target = (previous_total_target - known_previous_actual_total_base).max(0.0);
+        if projected_previous_total_base > 0.0 && projected_target > 0.0 {
+            let scale = projected_target / projected_previous_total_base;
+            for row in &mut rows {
+                if !row.previous_is_actual {
+                    row.previous_balance *= scale;
+                }
+            }
+        }
+    }
+
+    let mut total_previous_base = 0.0;
+    let mut api_rows = Vec::new();
+    for row in rows {
+        total_previous_base += convert_currency(
+            &conn,
+            &previous_month,
+            row.previous_balance,
+            &row.currency,
+            &base_currency,
+        )?;
+        api_rows.push(ManagerSnapshotRow {
+            account_id: row.account_id,
+            account_name: row.account_name,
+            currency: row.currency,
+            previous_balance: row.previous_balance,
+            previous_source: if row.previous_is_actual {
+                "actual".to_string()
+            } else {
+                "projected".to_string()
+            },
+            current_balance: row.current_balance,
+            current_source: row.current_source,
+            next_projected_balance: row.next_projected_balance,
         });
     }
 
@@ -1351,7 +1487,7 @@ fn get_manager_snapshot(state: tauri::State<AppState>) -> Result<ManagerSnapshot
         previous_month,
         current_month,
         next_month,
-        rows,
+        rows: api_rows,
         total_previous_base,
         total_current_base,
         total_next_projected_base,
