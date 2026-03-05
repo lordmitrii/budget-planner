@@ -7,20 +7,34 @@ interface OverviewPanelProps {
   dashboard: DashboardPayload;
   accounts: Account[];
   onUpsertAccount: (input: AccountInput) => Promise<Account>;
+  onDeleteAccount: (id: string) => Promise<void>;
 }
 
-export default function OverviewPanel({ dashboard, accounts, onUpsertAccount }: OverviewPanelProps) {
-  const [form, setForm] = useState<AccountInput>({
+export default function OverviewPanel({
+  dashboard,
+  accounts,
+  onUpsertAccount,
+  onDeleteAccount,
+}: OverviewPanelProps) {
+  const [newForm, setNewForm] = useState<AccountInput>({
     name: "",
     currency: "GBP",
     type: "bank",
   });
+  const [editForm, setEditForm] = useState<AccountInput | null>(null);
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
+  async function submitNew(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!form.name.trim()) return;
-    await onUpsertAccount({ ...form, name: form.name.trim() });
-    setForm({ name: "", currency: "GBP", type: "bank" });
+    if (!newForm.name.trim()) return;
+    await onUpsertAccount({ ...newForm, name: newForm.name.trim() });
+    setNewForm({ name: "", currency: "GBP", type: "bank" });
+  }
+
+  async function submitEdit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editForm?.id || !editForm.name.trim()) return;
+    await onUpsertAccount({ ...editForm, name: editForm.name.trim() });
+    setEditForm(null);
   }
 
   return (
@@ -48,7 +62,7 @@ export default function OverviewPanel({ dashboard, accounts, onUpsertAccount }: 
       <article className="panel">
         <div className="section-row">
           <h2>Accounts</h2>
-          <p className="hint">Projected and actual workflows use this account set.</p>
+          <p className="hint">Edit, deactivate, or remove accounts used in planning.</p>
         </div>
 
         <div className="table-scroll">
@@ -60,6 +74,7 @@ export default function OverviewPanel({ dashboard, accounts, onUpsertAccount }: 
                 <th>Type</th>
                 <th>Status</th>
                 <th>Current Balance</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -70,6 +85,51 @@ export default function OverviewPanel({ dashboard, accounts, onUpsertAccount }: 
                   <td>{account.type}</td>
                   <td>{account.isActive ? "Active" : "Inactive"}</td>
                   <td>{formatMoney(account.currentBalance ?? 0, account.currency)}</td>
+                  <td>
+                    <div className="actions-row compact">
+                      <button
+                        className="btn"
+                        type="button"
+                        onClick={() =>
+                          setEditForm({
+                            id: account.id,
+                            name: account.name,
+                            currency: account.currency,
+                            type: account.type,
+                            isActive: account.isActive,
+                          })
+                        }
+                      >
+                        Edit
+                      </button>
+                      <button
+                        className="btn"
+                        type="button"
+                        onClick={() =>
+                          onUpsertAccount({
+                            id: account.id,
+                            name: account.name,
+                            currency: account.currency,
+                            type: account.type,
+                            isActive: !account.isActive,
+                          })
+                        }
+                      >
+                        {account.isActive ? "Deactivate" : "Activate"}
+                      </button>
+                      <button
+                        className="btn danger"
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm(`Delete account \"${account.name} (${account.currency})\"?`)) {
+                            void onDeleteAccount(account.id);
+                          }
+                        }}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -77,25 +137,87 @@ export default function OverviewPanel({ dashboard, accounts, onUpsertAccount }: 
         </div>
       </article>
 
+      {editForm && (
+        <article className="panel">
+          <div className="section-row">
+            <h2>Edit Account</h2>
+            <button className="btn" type="button" onClick={() => setEditForm(null)}>
+              Cancel
+            </button>
+          </div>
+          <form className="grid-form" onSubmit={submitEdit}>
+            <label>
+              Name
+              <input
+                value={editForm.name}
+                onChange={(e) => setEditForm((v) => (v ? { ...v, name: e.target.value } : v))}
+                required
+              />
+            </label>
+            <label>
+              Currency
+              <select
+                value={editForm.currency}
+                onChange={(e) =>
+                  setEditForm((v) => (v ? { ...v, currency: e.target.value as AccountInput["currency"] } : v))
+                }
+              >
+                <option value="GBP">GBP</option>
+                <option value="EUR">EUR</option>
+                <option value="USD">USD</option>
+              </select>
+            </label>
+            <label>
+              Type
+              <select
+                value={editForm.type}
+                onChange={(e) => setEditForm((v) => (v ? { ...v, type: e.target.value as AccountInput["type"] } : v))}
+              >
+                <option value="bank">Bank</option>
+                <option value="cash">Cash</option>
+                <option value="savings">Savings</option>
+                <option value="investment">Investment</option>
+                <option value="receivable">Receivable</option>
+              </select>
+            </label>
+            <label>
+              Status
+              <select
+                value={editForm.isActive === false ? "inactive" : "active"}
+                onChange={(e) =>
+                  setEditForm((v) => (v ? { ...v, isActive: e.target.value === "active" } : v))
+                }
+              >
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
+              </select>
+            </label>
+            <button className="btn primary" type="submit">
+              Save Account
+            </button>
+          </form>
+        </article>
+      )}
+
       <article className="panel">
         <div className="section-row">
           <h2>Add Account</h2>
           <p className="hint">Use one entry per bank/currency account.</p>
         </div>
-        <form className="grid-form" onSubmit={submit}>
+        <form className="grid-form" onSubmit={submitNew}>
           <label>
             Name
             <input
-              value={form.name}
-              onChange={(e) => setForm((v) => ({ ...v, name: e.target.value }))}
+              value={newForm.name}
+              onChange={(e) => setNewForm((v) => ({ ...v, name: e.target.value }))}
               required
             />
           </label>
           <label>
             Currency
             <select
-              value={form.currency}
-              onChange={(e) => setForm((v) => ({ ...v, currency: e.target.value as AccountInput["currency"] }))}
+              value={newForm.currency}
+              onChange={(e) => setNewForm((v) => ({ ...v, currency: e.target.value as AccountInput["currency"] }))}
             >
               <option value="GBP">GBP</option>
               <option value="EUR">EUR</option>
@@ -105,8 +227,8 @@ export default function OverviewPanel({ dashboard, accounts, onUpsertAccount }: 
           <label>
             Type
             <select
-              value={form.type}
-              onChange={(e) => setForm((v) => ({ ...v, type: e.target.value as AccountInput["type"] }))}
+              value={newForm.type}
+              onChange={(e) => setNewForm((v) => ({ ...v, type: e.target.value as AccountInput["type"] }))}
             >
               <option value="bank">Bank</option>
               <option value="cash">Cash</option>
@@ -115,7 +237,9 @@ export default function OverviewPanel({ dashboard, accounts, onUpsertAccount }: 
               <option value="receivable">Receivable</option>
             </select>
           </label>
-          <button className="btn primary" type="submit">Add Account</button>
+          <button className="btn primary" type="submit">
+            Add Account
+          </button>
         </form>
       </article>
     </section>

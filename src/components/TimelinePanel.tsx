@@ -10,6 +10,7 @@ import {
   YAxis,
 } from "recharts";
 import type { DashboardPayload } from "@shared/types";
+import { currentMonthIso } from "@/lib/date";
 import { formatMoney } from "@/lib/money";
 
 interface TimelinePanelProps {
@@ -17,6 +18,15 @@ interface TimelinePanelProps {
 }
 
 export default function TimelinePanel({ dashboard }: TimelinePanelProps) {
+  const currentMonth = currentMonthIso();
+
+  function windowLabel(month: string): string {
+    if (month > currentMonth) return "Future";
+    if (month === currentMonth) return "Current";
+    if (dashboard.lastClosedMonth && month <= dashboard.lastClosedMonth) return "Closed";
+    return "Open";
+  }
+
   return (
     <section className="stack gap-12">
       <article className="panel chart-panel">
@@ -81,7 +91,7 @@ export default function TimelinePanel({ dashboard }: TimelinePanelProps) {
                   <td>
                     {point.varianceBase == null ? "-" : formatMoney(point.varianceBase, dashboard.baseCurrency)}
                   </td>
-                  <td>{point.isFuture ? "Future" : "Closed/Current"}</td>
+                  <td>{windowLabel(point.month)}</td>
                 </tr>
               ))}
             </tbody>

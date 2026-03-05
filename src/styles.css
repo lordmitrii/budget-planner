@@ -132,6 +132,12 @@ button {
   font-weight: 700;
 }
 
+.btn {
+  background: #edf3fc;
+  border-color: #ccdaee;
+  color: #26426a;
+}
+
 .btn.primary {
   background: linear-gradient(135deg, #0d69cc, #2886ea);
   color: #fff;
@@ -250,6 +256,11 @@ th {
   display: flex;
   gap: 8px;
   margin: 10px 0;
+  flex-wrap: wrap;
+}
+
+.actions-row.compact {
+  margin: 0;
 }
 
 .chart-panel {

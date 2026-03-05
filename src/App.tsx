@@ -16,6 +16,7 @@ import OverviewPanel from "@/components/OverviewPanel";
 import MonthlyClosePanel from "@/components/MonthlyClosePanel";
 import DriversPanel from "@/components/DriversPanel";
 import TimelinePanel from "@/components/TimelinePanel";
+import SnapshotPanel from "@/components/SnapshotPanel";
 import CorrectionsPanel from "@/components/CorrectionsPanel";
 import DataPanel from "@/components/DataPanel";
 
@@ -24,6 +25,7 @@ const screens: Array<{ id: Screen; label: string }> = [
   { id: "monthly-close", label: "Monthly Close" },
   { id: "drivers", label: "Forecast Drivers" },
   { id: "timeline", label: "Timeline" },
+  { id: "snapshot", label: "Snapshot" },
   { id: "corrections", label: "Corrections" },
   { id: "data", label: "Data" },
 ];
@@ -49,15 +51,27 @@ export default function App() {
     enabled: initQuery.isSuccess,
   });
 
+  const snapshotQuery = useQuery({
+    queryKey: ["manager-snapshot"],
+    queryFn: api.getManagerSnapshot,
+    enabled: initQuery.isSuccess,
+  });
+
   const refreshAll = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
       queryClient.invalidateQueries({ queryKey: ["accounts"] }),
+      queryClient.invalidateQueries({ queryKey: ["manager-snapshot"] }),
     ]);
   };
 
   const upsertAccountMutation = useMutation({
     mutationFn: (input: AccountInput) => api.upsertAccount(input),
+    onSuccess: refreshAll,
+  });
+
+  const deleteAccountMutation = useMutation({
+    mutationFn: (id: string) => api.deleteAccount(id),
     onSuccess: refreshAll,
   });
 
@@ -78,6 +92,11 @@ export default function App() {
 
   const applyCorrectionMutation = useMutation({
     mutationFn: (input: QuickCorrectionInput) => api.applyQuickCorrection(input),
+    onSuccess: refreshAll,
+  });
+
+  const deleteCorrectionMutation = useMutation({
+    mutationFn: (id: string) => api.deleteQuickCorrection(id),
     onSuccess: refreshAll,
   });
 
@@ -107,6 +126,7 @@ export default function App() {
 
   const dashboard = dashboardQuery.data;
   const accounts = accountsQuery.data || [];
+  const activeAccounts = useMemo(() => accounts.filter((account) => account.isActive), [accounts]);
 
   const headerCards = useMemo(() => {
     if (!dashboard) {
@@ -222,13 +242,14 @@ export default function App() {
                 dashboard={dashboard}
                 accounts={accounts}
                 onUpsertAccount={(input) => upsertAccountMutation.mutateAsync(input)}
+                onDeleteAccount={(id) => deleteAccountMutation.mutateAsync(id)}
               />
             )}
 
             {screen === "monthly-close" && (
               <MonthlyClosePanel
                 dashboard={dashboard}
-                accounts={accounts}
+                accounts={activeAccounts}
                 selectedMonth={selectedMonth}
                 onSubmitClose={(input) => monthlyCloseMutation.mutateAsync(input)}
               />
@@ -237,7 +258,7 @@ export default function App() {
             {screen === "drivers" && (
               <DriversPanel
                 dashboard={dashboard}
-                accounts={accounts}
+                accounts={activeAccounts}
                 onUpsertDriver={(input) => upsertDriverMutation.mutateAsync(input)}
                 onDeleteDriver={(id) => deleteDriverMutation.mutateAsync(id)}
               />
@@ -245,11 +266,22 @@ export default function App() {
 
             {screen === "timeline" && <TimelinePanel dashboard={dashboard} />}
 
+            {screen === "snapshot" && snapshotQuery.data && <SnapshotPanel snapshot={snapshotQuery.data} />}
+
+            {screen === "snapshot" && snapshotQuery.isLoading && (
+              <section className="panel">Building snapshot...</section>
+            )}
+
+            {screen === "snapshot" && snapshotQuery.isError && (
+              <section className="panel error">Failed to build snapshot.</section>
+            )}
+
             {screen === "corrections" && (
               <CorrectionsPanel
                 dashboard={dashboard}
-                accounts={accounts}
+                accounts={activeAccounts}
                 onApplyCorrection={(input) => applyCorrectionMutation.mutateAsync(input)}
+                onDeleteCorrection={(id) => deleteCorrectionMutation.mutateAsync(id)}
               />
             )}
 

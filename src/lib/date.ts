@@ -14,3 +14,7 @@ export function formatMonth(monthIso: string): string {
   const date = new Date(`${monthIso}T00:00:00.000Z`);
   return date.toLocaleDateString("en-GB", { month: "short", year: "numeric" });
 }
+
+export function currentMonthIso(): string {
+  return monthStart(new Date());
+}

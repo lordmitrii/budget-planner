@@ -37,6 +37,7 @@ export interface MonthlyClose {
 
 export interface MonthlyCloseInput {
   month: string;
+  note?: string;
   closes: Array<{
     accountId: string;
     closingBalance: number;
@@ -152,6 +153,28 @@ export interface DashboardPayload {
   timeline: TimelinePoint[];
   scenarioSummary: ScenarioSummary;
   selectedSnapshotMonth?: string | null;
+}
+
+export interface ManagerSnapshotRow {
+  accountId: string;
+  accountName: string;
+  currency: Currency;
+  previousBalance: number;
+  previousSource: "actual" | "projected";
+  currentBalance: number;
+  currentSource: "actual" | "projected";
+  nextProjectedBalance: number;
+}
+
+export interface ManagerSnapshotPayload {
+  baseCurrency: Currency;
+  previousMonth: string;
+  currentMonth: string;
+  nextMonth: string;
+  rows: ManagerSnapshotRow[];
+  totalPreviousBase: number;
+  totalCurrentBase: number;
+  totalNextProjectedBase: number;
 }
 
 export interface SeedImportInput {

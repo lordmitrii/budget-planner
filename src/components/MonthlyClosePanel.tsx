@@ -27,6 +27,7 @@ export default function MonthlyClosePanel({
   }, [dashboard.projection.points, selectedMonth]);
 
   const [closeValues, setCloseValues] = useState<Record<string, string>>({});
+  const [closeNote, setCloseNote] = useState("");
   const [result, setResult] = useState<MonthlyCloseResult | null>(null);
 
   useEffect(() => {
@@ -36,6 +37,7 @@ export default function MonthlyClosePanel({
       next[account.id] = projected.toFixed(2);
     }
     setCloseValues(next);
+    setCloseNote("");
     setResult(null);
   }, [accounts, projectedByAccount, selectedMonth]);
 
@@ -44,9 +46,10 @@ export default function MonthlyClosePanel({
     const closes = accounts.map((account) => ({
       accountId: account.id,
       closingBalance: Number(closeValues[account.id] ?? 0),
+      note: closeNote.trim() || undefined,
     }));
 
-    const response = await onSubmitClose({ month: selectedMonth, closes });
+    const response = await onSubmitClose({ month: selectedMonth, note: closeNote.trim() || undefined, closes });
     setResult(response);
   }
 
@@ -104,6 +107,16 @@ export default function MonthlyClosePanel({
               </tbody>
             </table>
           </div>
+
+          <label>
+            Close Note (optional)
+            <textarea
+              rows={2}
+              value={closeNote}
+              onChange={(e) => setCloseNote(e.target.value)}
+              placeholder="Example: closed after flat payment, before salary credit"
+            />
+          </label>
 
           <button className="btn primary" type="submit">
             Commit Month Close

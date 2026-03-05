@@ -12,30 +12,69 @@ interface CorrectionsPanelProps {
   dashboard: DashboardPayload;
   accounts: Account[];
   onApplyCorrection: (input: QuickCorrectionInput) => Promise<QuickCorrection>;
+  onDeleteCorrection: (id: string) => Promise<void>;
 }
 
-export default function CorrectionsPanel({ dashboard, accounts, onApplyCorrection }: CorrectionsPanelProps) {
+type CorrectionFormState = Omit<QuickCorrectionInput, "delta"> & {
+  deltaText: string;
+};
+
+function toForm(correction: QuickCorrection): CorrectionFormState {
+  return {
+    id: correction.id,
+    effectiveMonth: correction.effectiveMonth,
+    accountId: correction.accountId,
+    deltaText: String(correction.delta),
+    currency: correction.currency,
+    reason: correction.reason ?? "",
+  };
+}
+
+export default function CorrectionsPanel({
+  dashboard,
+  accounts,
+  onApplyCorrection,
+  onDeleteCorrection,
+}: CorrectionsPanelProps) {
   const defaultAccount = accounts[0];
-  const [form, setForm] = useState<QuickCorrectionInput>({
+  const [form, setForm] = useState<CorrectionFormState>({
     effectiveMonth: new Date().toISOString().slice(0, 7) + "-01",
     accountId: defaultAccount?.id ?? "",
-    delta: 0,
+    deltaText: "",
     currency: defaultAccount?.currency ?? "GBP",
     reason: "",
   });
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!form.accountId || !form.delta) return;
-    await onApplyCorrection(form);
-    setForm((old) => ({ ...old, delta: 0, reason: "" }));
+    if (!form.accountId) return;
+
+    const delta = Number(form.deltaText);
+    if (!Number.isFinite(delta) || delta === 0) return;
+
+    await onApplyCorrection({
+      id: form.id,
+      effectiveMonth: form.effectiveMonth,
+      accountId: form.accountId,
+      delta,
+      currency: form.currency,
+      reason: form.reason,
+    });
+
+    setForm((old) => ({
+      effectiveMonth: old.effectiveMonth,
+      accountId: old.accountId,
+      deltaText: "",
+      currency: old.currency,
+      reason: "",
+    }));
   }
 
   return (
     <section className="stack gap-12">
       <article className="panel">
         <div className="section-row">
-          <h2>Add Quick Correction</h2>
+          <h2>{form.id ? "Edit Quick Correction" : "Add Quick Correction"}</h2>
           <p className="hint">Small adjustments between monthly close cycles.</p>
         </div>
 
@@ -69,10 +108,12 @@ export default function CorrectionsPanel({ dashboard, accounts, onApplyCorrectio
           <label>
             Delta
             <input
-              type="number"
-              step="0.01"
-              value={form.delta}
-              onChange={(e) => setForm((v) => ({ ...v, delta: Number(e.target.value) }))}
+              type="text"
+              inputMode="decimal"
+              value={form.deltaText}
+              onChange={(e) => setForm((v) => ({ ...v, deltaText: e.target.value }))}
+              placeholder="e.g. -120"
+              required
             />
           </label>
 
@@ -97,9 +138,28 @@ export default function CorrectionsPanel({ dashboard, accounts, onApplyCorrectio
             />
           </label>
 
-          <button className="btn primary" type="submit">
-            Apply Correction
-          </button>
+          <div className="actions-row">
+            <button className="btn primary" type="submit">
+              {form.id ? "Save Correction" : "Apply Correction"}
+            </button>
+            {form.id && (
+              <button
+                className="btn"
+                type="button"
+                onClick={() =>
+                  setForm({
+                    effectiveMonth: new Date().toISOString().slice(0, 7) + "-01",
+                    accountId: defaultAccount?.id ?? "",
+                    deltaText: "",
+                    currency: defaultAccount?.currency ?? "GBP",
+                    reason: "",
+                  })
+                }
+              >
+                Cancel Edit
+              </button>
+            )}
+          </div>
         </form>
       </article>
 
@@ -114,6 +174,7 @@ export default function CorrectionsPanel({ dashboard, accounts, onApplyCorrectio
                 <th>Delta</th>
                 <th>Reason</th>
                 <th>Created</th>
+                <th>Action</th>
               </tr>
             </thead>
             <tbody>
@@ -126,6 +187,16 @@ export default function CorrectionsPanel({ dashboard, accounts, onApplyCorrectio
                     <td>{formatMoney(correction.delta, correction.currency)}</td>
                     <td>{correction.reason || "-"}</td>
                     <td>{correction.createdAt.replace("T", " ").slice(0, 16)}</td>
+                    <td>
+                      <div className="actions-row compact">
+                        <button className="btn" type="button" onClick={() => setForm(toForm(correction))}>
+                          Edit
+                        </button>
+                        <button className="btn danger" type="button" onClick={() => onDeleteCorrection(correction.id)}>
+                          Delete
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 );
               })}

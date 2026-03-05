@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
-import type { Account, DashboardPayload, DriverInput } from "@shared/types";
+import type { Account, DashboardPayload, Driver, DriverInput } from "@shared/types";
 import { formatMoney } from "@/lib/money";
 
 interface DriversPanelProps {
@@ -10,29 +10,63 @@ interface DriversPanelProps {
   onDeleteDriver: (id: string) => Promise<unknown>;
 }
 
-const emptyDriver: DriverInput = {
-  accountId: "",
+type DriverFormState = Omit<DriverInput, "amount"> & {
+  amountText: string;
+};
+
+const emptyDriver = (accountId: string, currency: DriverInput["currency"]): DriverFormState => ({
+  accountId,
   kind: "recurring",
   label: "",
-  amount: 0,
-  currency: "GBP",
+  amountText: "",
+  currency,
   startMonth: new Date().toISOString().slice(0, 7) + "-01",
   endMonth: null,
   repeatRule: "monthly",
-};
+});
+
+function toForm(driver: Driver): DriverFormState {
+  return {
+    id: driver.id,
+    accountId: driver.accountId,
+    kind: driver.kind,
+    label: driver.label,
+    amountText: String(driver.amount),
+    currency: driver.currency,
+    startMonth: driver.startMonth,
+    endMonth: driver.endMonth,
+    repeatRule: driver.repeatRule,
+    isActive: driver.isActive,
+  };
+}
 
 export default function DriversPanel({ dashboard, accounts, onUpsertDriver, onDeleteDriver }: DriversPanelProps) {
-  const [form, setForm] = useState<DriverInput>({
-    ...emptyDriver,
-    accountId: accounts[0]?.id ?? "",
-    currency: accounts[0]?.currency ?? "GBP",
-  });
+  const defaultAccount = accounts[0];
+  const [form, setForm] = useState<DriverFormState>(
+    emptyDriver(defaultAccount?.id ?? "", defaultAccount?.currency ?? "GBP"),
+  );
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!form.label.trim() || !form.accountId) return;
-    await onUpsertDriver({ ...form, label: form.label.trim() });
-    setForm((old) => ({ ...emptyDriver, accountId: old.accountId, currency: old.currency }));
+
+    const amount = Number(form.amountText);
+    if (!Number.isFinite(amount)) return;
+
+    await onUpsertDriver({
+      id: form.id,
+      accountId: form.accountId,
+      kind: form.kind,
+      label: form.label.trim(),
+      amount,
+      currency: form.currency,
+      startMonth: form.startMonth,
+      endMonth: form.endMonth,
+      repeatRule: form.repeatRule,
+      isActive: form.isActive,
+    });
+
+    setForm((old) => emptyDriver(old.accountId, old.currency));
   }
 
   return (
@@ -74,10 +108,12 @@ export default function DriversPanel({ dashboard, accounts, onUpsertDriver, onDe
           <label>
             Amount
             <input
-              type="number"
-              step="0.01"
-              value={form.amount}
-              onChange={(e) => setForm((v) => ({ ...v, amount: Number(e.target.value) }))}
+              type="text"
+              inputMode="decimal"
+              value={form.amountText}
+              onChange={(e) => setForm((v) => ({ ...v, amountText: e.target.value }))}
+              placeholder="e.g. -2500"
+              required
             />
           </label>
           <label>
@@ -119,7 +155,32 @@ export default function DriversPanel({ dashboard, accounts, onUpsertDriver, onDe
               onChange={(e) => setForm((v) => ({ ...v, endMonth: e.target.value ? `${e.target.value}-01` : null }))}
             />
           </label>
-          <button className="btn primary" type="submit">Save Driver</button>
+          {form.id && (
+            <label>
+              Status
+              <select
+                value={form.isActive === false ? "inactive" : "active"}
+                onChange={(e) => setForm((v) => ({ ...v, isActive: e.target.value === "active" }))}
+              >
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
+              </select>
+            </label>
+          )}
+          <div className="actions-row">
+            <button className="btn primary" type="submit">
+              {form.id ? "Save Driver" : "Add Driver"}
+            </button>
+            {form.id && (
+              <button
+                className="btn"
+                type="button"
+                onClick={() => setForm(emptyDriver(defaultAccount?.id ?? "", defaultAccount?.currency ?? "GBP"))}
+              >
+                Cancel Edit
+              </button>
+            )}
+          </div>
         </form>
       </article>
 
@@ -134,6 +195,7 @@ export default function DriversPanel({ dashboard, accounts, onUpsertDriver, onDe
                 <th>Kind</th>
                 <th>Amount</th>
                 <th>Schedule</th>
+                <th>Status</th>
                 <th>Action</th>
               </tr>
             </thead>
@@ -150,10 +212,16 @@ export default function DriversPanel({ dashboard, accounts, onUpsertDriver, onDe
                       {driver.startMonth.slice(0, 7)}
                       {driver.endMonth ? ` -> ${driver.endMonth.slice(0, 7)}` : " -> open"} ({driver.repeatRule})
                     </td>
+                    <td>{driver.isActive ? "Active" : "Inactive"}</td>
                     <td>
-                      <button className="btn danger" type="button" onClick={() => onDeleteDriver(driver.id)}>
-                        Delete
-                      </button>
+                      <div className="actions-row compact">
+                        <button className="btn" type="button" onClick={() => setForm(toForm(driver))}>
+                          Edit
+                        </button>
+                        <button className="btn danger" type="button" onClick={() => onDeleteDriver(driver.id)}>
+                          Delete
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );

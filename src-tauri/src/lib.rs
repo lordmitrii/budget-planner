@@ -52,6 +52,7 @@ pub struct MonthlyCloseInputRow {
 #[serde(rename_all = "camelCase")]
 pub struct MonthlyCloseInput {
     pub month: String,
+    pub note: Option<String>,
     pub closes: Vec<MonthlyCloseInputRow>,
 }
 
@@ -187,6 +188,32 @@ pub struct DashboardPayload {
     pub timeline: Vec<TimelinePoint>,
     pub scenario_summary: ScenarioSummary,
     pub selected_snapshot_month: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagerSnapshotRow {
+    pub account_id: String,
+    pub account_name: String,
+    pub currency: String,
+    pub previous_balance: f64,
+    pub previous_source: String,
+    pub current_balance: f64,
+    pub current_source: String,
+    pub next_projected_balance: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagerSnapshotPayload {
+    pub base_currency: String,
+    pub previous_month: String,
+    pub current_month: String,
+    pub next_month: String,
+    pub rows: Vec<ManagerSnapshotRow>,
+    pub total_previous_base: f64,
+    pub total_current_base: f64,
+    pub total_next_projected_base: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -916,6 +943,18 @@ fn upsert_account(state: tauri::State<AppState>, input: AccountInput) -> Result<
 }
 
 #[tauri::command]
+fn delete_account(state: tauri::State<AppState>, id: String) -> Result<(), String> {
+    let conn = open_conn(&state)?;
+    migrate(&conn)?;
+
+    conn.execute("DELETE FROM accounts WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+
+    recompute_projection_internal(&conn, DEFAULT_HORIZON_MONTHS, None, true)?;
+    Ok(())
+}
+
+#[tauri::command]
 fn upsert_driver(state: tauri::State<AppState>, input: DriverInput) -> Result<Driver, String> {
     let conn = open_conn(&state)?;
     migrate(&conn)?;
@@ -1012,6 +1051,18 @@ fn apply_quick_correction(state: tauri::State<AppState>, input: QuickCorrectionI
 }
 
 #[tauri::command]
+fn delete_quick_correction(state: tauri::State<AppState>, id: String) -> Result<(), String> {
+    let conn = open_conn(&state)?;
+    migrate(&conn)?;
+
+    conn.execute("DELETE FROM quick_corrections WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+
+    recompute_projection_internal(&conn, DEFAULT_HORIZON_MONTHS, None, true)?;
+    Ok(())
+}
+
+#[tauri::command]
 fn recompute_projection(state: tauri::State<AppState>, input: ProjectionRequest) -> Result<ProjectionResult, String> {
     let conn = open_conn(&state)?;
     migrate(&conn)?;
@@ -1047,6 +1098,7 @@ fn set_monthly_close(state: tauri::State<AppState>, input: MonthlyCloseInput) ->
     let created_at = now_iso();
 
     for row in &input.closes {
+        let close_note = row.note.clone().or_else(|| input.note.clone());
         conn.execute(
             "INSERT INTO monthly_actual_closes(month, account_id, closing_balance, note, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)
@@ -1057,7 +1109,7 @@ fn set_monthly_close(state: tauri::State<AppState>, input: MonthlyCloseInput) ->
                 input.month,
                 row.account_id,
                 row.closing_balance,
-                row.note,
+                close_note,
                 created_at
             ],
         )
@@ -1188,6 +1240,121 @@ fn get_dashboard(state: tauri::State<AppState>, horizon_months: u8) -> Result<Da
             net_base: inflow - outflow,
         },
         selected_snapshot_month: get_setting(&conn, "selected_snapshot_month")?,
+    })
+}
+
+fn actual_close_for_month(conn: &Connection, account_id: &str, month: &str) -> Result<Option<f64>, String> {
+    conn.query_row(
+        "SELECT closing_balance FROM monthly_actual_closes WHERE account_id = ?1 AND month = ?2",
+        params![account_id, month],
+        |row| row.get::<_, f64>(0),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_manager_snapshot(state: tauri::State<AppState>) -> Result<ManagerSnapshotPayload, String> {
+    let conn = open_conn(&state)?;
+    migrate(&conn)?;
+
+    let base_currency = get_base_currency(&conn)?;
+    let current_month = today_month();
+    let previous_month = add_months(&current_month, -1)?;
+    let next_month = add_months(&current_month, 1)?;
+
+    let projection = recompute_projection_internal(&conn, 3, Some(previous_month.clone()), false)?;
+    let projected_map: HashMap<(String, String), f64> = projection
+        .points
+        .iter()
+        .map(|point| {
+            (
+                (point.month.clone(), point.account_id.clone()),
+                point.projected_balance,
+            )
+        })
+        .collect();
+
+    let accounts = list_accounts_internal(&conn)?
+        .into_iter()
+        .filter(|account| account.is_active)
+        .collect::<Vec<_>>();
+
+    let mut rows = Vec::new();
+    let mut total_previous_base = 0.0;
+    let mut total_current_base = 0.0;
+    let mut total_next_projected_base = 0.0;
+
+    for account in accounts {
+        let projected_prev = *projected_map
+            .get(&(previous_month.clone(), account.id.clone()))
+            .unwrap_or(&0.0);
+        let projected_current = *projected_map
+            .get(&(current_month.clone(), account.id.clone()))
+            .unwrap_or(&projected_prev);
+        let projected_next = *projected_map
+            .get(&(next_month.clone(), account.id.clone()))
+            .unwrap_or(&projected_current);
+
+        let actual_previous = actual_close_for_month(&conn, &account.id, &previous_month)?;
+        let actual_current = actual_close_for_month(&conn, &account.id, &current_month)?;
+
+        let previous_balance = actual_previous.unwrap_or(projected_prev);
+        let previous_source = if actual_previous.is_some() {
+            "actual".to_string()
+        } else {
+            "projected".to_string()
+        };
+        let current_balance = actual_current.unwrap_or(projected_current);
+        let current_source = if actual_current.is_some() {
+            "actual".to_string()
+        } else {
+            "projected".to_string()
+        };
+
+        total_previous_base += convert_currency(
+            &conn,
+            &previous_month,
+            previous_balance,
+            &account.currency,
+            &base_currency,
+        )?;
+        total_current_base += convert_currency(
+            &conn,
+            &current_month,
+            current_balance,
+            &account.currency,
+            &base_currency,
+        )?;
+        total_next_projected_base += convert_currency(
+            &conn,
+            &next_month,
+            projected_next,
+            &account.currency,
+            &base_currency,
+        )?;
+
+        rows.push(ManagerSnapshotRow {
+            account_id: account.id,
+            account_name: account.name,
+            currency: account.currency,
+            previous_balance,
+            previous_source,
+            current_balance,
+            current_source,
+            next_projected_balance: projected_next,
+        });
+    }
+
+    Ok(ManagerSnapshotPayload {
+        base_currency,
+        previous_month,
+        current_month,
+        next_month,
+        rows,
+        total_previous_base,
+        total_current_base,
+        total_next_projected_base,
     })
 }
 
@@ -1689,10 +1856,13 @@ pub fn run() {
             get_dashboard,
             list_accounts,
             upsert_account,
+            delete_account,
             set_monthly_close,
             apply_quick_correction,
+            delete_quick_correction,
             upsert_driver,
             delete_driver,
+            get_manager_snapshot,
             recompute_projection,
             import_seed_json,
             import_excel_tsv,

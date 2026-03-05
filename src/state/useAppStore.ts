@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type Screen = "overview" | "monthly-close" | "drivers" | "timeline" | "corrections" | "data";
+export type Screen = "overview" | "monthly-close" | "drivers" | "timeline" | "snapshot" | "corrections" | "data";
 
 interface AppState {
   screen: Screen;
