@@ -22,23 +22,50 @@ export default function OverviewPanel({
     type: "bank",
   });
   const [editForm, setEditForm] = useState<AccountInput | null>(null);
+  const [feedback, setFeedback] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+
+  function showError(err: unknown) {
+    const text = err instanceof Error ? err.message : String(err);
+    setFeedback({ kind: "error", text });
+  }
 
   async function submitNew(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!newForm.name.trim()) return;
-    await onUpsertAccount({ ...newForm, name: newForm.name.trim() });
-    setNewForm({ name: "", currency: "GBP", type: "bank" });
+    try {
+      await onUpsertAccount({ ...newForm, name: newForm.name.trim() });
+      setNewForm({ name: "", currency: "GBP", type: "bank" });
+      setFeedback({ kind: "success", text: `Account "${newForm.name.trim()}" added.` });
+    } catch (err) {
+      showError(err);
+    }
   }
 
   async function submitEdit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!editForm?.id || !editForm.name.trim()) return;
-    await onUpsertAccount({ ...editForm, name: editForm.name.trim() });
-    setEditForm(null);
+    try {
+      await onUpsertAccount({ ...editForm, name: editForm.name.trim() });
+      setFeedback({ kind: "success", text: `Account "${editForm.name.trim()}" updated.` });
+      setEditForm(null);
+    } catch (err) {
+      showError(err);
+    }
   }
 
   return (
     <section className="stack gap-12">
+      {feedback && (
+        <article className={`panel ${feedback.kind === "error" ? "error" : "notice"}`}>
+          <div className="section-row">
+            <p>{feedback.text}</p>
+            <button className="btn" type="button" onClick={() => setFeedback(null)}>
+              Dismiss
+            </button>
+          </div>
+        </article>
+      )}
+
       <article className="panel">
         <div className="section-row">
           <h2>Scenario Summary</h2>
@@ -79,7 +106,10 @@ export default function OverviewPanel({
             </thead>
             <tbody>
               {accounts.map((account) => (
-                <tr key={account.id}>
+                <tr
+                  key={account.id}
+                  className={account.isActive ? "account-row account-row-active" : "account-row account-row-inactive"}
+                >
                   <td>{account.name}</td>
                   <td>{account.currency}</td>
                   <td>{account.type}</td>
@@ -105,24 +135,37 @@ export default function OverviewPanel({
                       <button
                         className="btn"
                         type="button"
-                        onClick={() =>
-                          onUpsertAccount({
+                        onClick={async () => {
+                          try {
+                            await onUpsertAccount({
                             id: account.id,
                             name: account.name,
                             currency: account.currency,
                             type: account.type,
                             isActive: !account.isActive,
-                          })
-                        }
+                            });
+                            setFeedback({
+                              kind: "success",
+                              text: `Account "${account.name}" ${account.isActive ? "deactivated" : "activated"}.`,
+                            });
+                          } catch (err) {
+                            showError(err);
+                          }
+                        }}
                       >
                         {account.isActive ? "Deactivate" : "Activate"}
                       </button>
                       <button
                         className="btn danger"
                         type="button"
-                        onClick={() => {
+                        onClick={async () => {
                           if (window.confirm(`Delete account \"${account.name} (${account.currency})\"?`)) {
-                            void onDeleteAccount(account.id);
+                            try {
+                              await onDeleteAccount(account.id);
+                              setFeedback({ kind: "success", text: `Account "${account.name}" deleted.` });
+                            } catch (err) {
+                              showError(err);
+                            }
                           }
                         }}
                       >

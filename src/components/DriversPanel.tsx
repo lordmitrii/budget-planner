@@ -45,6 +45,12 @@ export default function DriversPanel({ dashboard, accounts, onUpsertDriver, onDe
   const [form, setForm] = useState<DriverFormState>(
     emptyDriver(defaultAccount?.id ?? "", defaultAccount?.currency ?? "GBP"),
   );
+  const [feedback, setFeedback] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+
+  function showError(err: unknown) {
+    const text = err instanceof Error ? err.message : String(err);
+    setFeedback({ kind: "error", text });
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -53,24 +59,42 @@ export default function DriversPanel({ dashboard, accounts, onUpsertDriver, onDe
     const amount = Number(form.amountText);
     if (!Number.isFinite(amount)) return;
 
-    await onUpsertDriver({
-      id: form.id,
-      accountId: form.accountId,
-      kind: form.kind,
-      label: form.label.trim(),
-      amount,
-      currency: form.currency,
-      startMonth: form.startMonth,
-      endMonth: form.endMonth,
-      repeatRule: form.repeatRule,
-      isActive: form.isActive,
-    });
+    try {
+      const isEdit = Boolean(form.id);
+      const label = form.label.trim();
+      await onUpsertDriver({
+        id: form.id,
+        accountId: form.accountId,
+        kind: form.kind,
+        label,
+        amount,
+        currency: form.currency,
+        startMonth: form.startMonth,
+        endMonth: form.endMonth,
+        repeatRule: form.repeatRule,
+        isActive: form.isActive,
+      });
 
-    setForm((old) => emptyDriver(old.accountId, old.currency));
+      setForm((old) => emptyDriver(old.accountId, old.currency));
+      setFeedback({ kind: "success", text: `Driver "${label}" ${isEdit ? "updated" : "saved"}.` });
+    } catch (err) {
+      showError(err);
+    }
   }
 
   return (
     <section className="stack gap-12">
+      {feedback && (
+        <article className={`panel ${feedback.kind === "error" ? "error" : "notice"}`}>
+          <div className="section-row">
+            <p>{feedback.text}</p>
+            <button className="btn" type="button" onClick={() => setFeedback(null)}>
+              Dismiss
+            </button>
+          </div>
+        </article>
+      )}
+
       <article className="panel">
         <div className="section-row">
           <h2>Forecast Drivers</h2>
@@ -218,7 +242,19 @@ export default function DriversPanel({ dashboard, accounts, onUpsertDriver, onDe
                         <button className="btn" type="button" onClick={() => setForm(toForm(driver))}>
                           Edit
                         </button>
-                        <button className="btn danger" type="button" onClick={() => onDeleteDriver(driver.id)}>
+                        <button
+                          className="btn danger"
+                          type="button"
+                          onClick={async () => {
+                            if (!window.confirm(`Delete driver "${driver.label}"?`)) return;
+                            try {
+                              await onDeleteDriver(driver.id);
+                              setFeedback({ kind: "success", text: `Driver "${driver.label}" deleted.` });
+                            } catch (err) {
+                              showError(err);
+                            }
+                          }}
+                        >
                           Delete
                         </button>
                       </div>

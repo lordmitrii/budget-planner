@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ManagerSnapshotPayload } from "@shared/types";
 import { formatMonth } from "@/lib/date";
 import { formatMoney } from "@/lib/money";
@@ -9,6 +9,12 @@ interface SnapshotPanelProps {
 
 export default function SnapshotPanel({ snapshot }: SnapshotPanelProps) {
   const [copyStatus, setCopyStatus] = useState<string>("");
+
+  useEffect(() => {
+    if (!copyStatus) return;
+    const timer = window.setTimeout(() => setCopyStatus(""), 2800);
+    return () => window.clearTimeout(timer);
+  }, [copyStatus]);
 
   const rows = useMemo(
     () =>

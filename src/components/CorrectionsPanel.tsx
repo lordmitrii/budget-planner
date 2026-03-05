@@ -44,6 +44,12 @@ export default function CorrectionsPanel({
     currency: defaultAccount?.currency ?? "GBP",
     reason: "",
   });
+  const [feedback, setFeedback] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+
+  function showError(err: unknown) {
+    const text = err instanceof Error ? err.message : String(err);
+    setFeedback({ kind: "error", text });
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -52,26 +58,46 @@ export default function CorrectionsPanel({
     const delta = Number(form.deltaText);
     if (!Number.isFinite(delta) || delta === 0) return;
 
-    await onApplyCorrection({
-      id: form.id,
-      effectiveMonth: form.effectiveMonth,
-      accountId: form.accountId,
-      delta,
-      currency: form.currency,
-      reason: form.reason,
-    });
+    try {
+      const isEdit = Boolean(form.id);
+      await onApplyCorrection({
+        id: form.id,
+        effectiveMonth: form.effectiveMonth,
+        accountId: form.accountId,
+        delta,
+        currency: form.currency,
+        reason: form.reason,
+      });
 
-    setForm((old) => ({
-      effectiveMonth: old.effectiveMonth,
-      accountId: old.accountId,
-      deltaText: "",
-      currency: old.currency,
-      reason: "",
-    }));
+      setForm((old) => ({
+        effectiveMonth: old.effectiveMonth,
+        accountId: old.accountId,
+        deltaText: "",
+        currency: old.currency,
+        reason: "",
+      }));
+      setFeedback({
+        kind: "success",
+        text: `Correction ${isEdit ? "updated" : "saved"} for ${form.effectiveMonth.slice(0, 7)}.`,
+      });
+    } catch (err) {
+      showError(err);
+    }
   }
 
   return (
     <section className="stack gap-12">
+      {feedback && (
+        <article className={`panel ${feedback.kind === "error" ? "error" : "notice"}`}>
+          <div className="section-row">
+            <p>{feedback.text}</p>
+            <button className="btn" type="button" onClick={() => setFeedback(null)}>
+              Dismiss
+            </button>
+          </div>
+        </article>
+      )}
+
       <article className="panel">
         <div className="section-row">
           <h2>{form.id ? "Edit Quick Correction" : "Add Quick Correction"}</h2>
@@ -192,7 +218,22 @@ export default function CorrectionsPanel({
                         <button className="btn" type="button" onClick={() => setForm(toForm(correction))}>
                           Edit
                         </button>
-                        <button className="btn danger" type="button" onClick={() => onDeleteCorrection(correction.id)}>
+                        <button
+                          className="btn danger"
+                          type="button"
+                          onClick={async () => {
+                            if (!window.confirm(`Delete correction for ${correction.effectiveMonth.slice(0, 7)}?`)) return;
+                            try {
+                              await onDeleteCorrection(correction.id);
+                              setFeedback({
+                                kind: "success",
+                                text: `Correction deleted for ${correction.effectiveMonth.slice(0, 7)}.`,
+                              });
+                            } catch (err) {
+                              showError(err);
+                            }
+                          }}
+                        >
                           Delete
                         </button>
                       </div>

@@ -130,12 +130,35 @@ button {
   cursor: pointer;
   padding: 9px 12px;
   font-weight: 700;
+  transition: transform 90ms ease, filter 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+}
+
+button:hover:not(:disabled) {
+  filter: brightness(1.03);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px) scale(0.98);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+button:focus-visible {
+  outline: 2px solid rgba(13, 105, 204, 0.45);
+  outline-offset: 2px;
 }
 
 .btn {
   background: #edf3fc;
   border-color: #ccdaee;
   color: #26426a;
+}
+
+.btn.loading {
+  filter: saturate(0.72);
 }
 
 .btn.primary {
@@ -237,6 +260,19 @@ td {
   font-size: 0.9rem;
 }
 
+.account-row td:first-child {
+  border-left: 4px solid transparent;
+  padding-left: 10px;
+}
+
+.account-row-active td:first-child {
+  border-left-color: #1ca66f;
+}
+
+.account-row-inactive td:first-child {
+  border-left-color: #b0bac9;
+}
+
 th {
   color: #3f5677;
   font-weight: 700;
@@ -275,6 +311,11 @@ th {
 .notice {
   border-color: #b7decf;
   background: #f2fbf7;
+}
+
+.notice p,
+.error p {
+  margin: 0;
 }
 
 .error {
