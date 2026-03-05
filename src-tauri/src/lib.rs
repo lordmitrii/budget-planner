@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
+mod projection_math;
+
 use chrono::{Datelike, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -864,7 +866,8 @@ fn recompute_projection_internal(
                 source = if idx == 0 { "baseline".to_string() } else { "rebased".to_string() };
                 *actual
             } else {
-                let mut balance = *baseline.get(&account.id).unwrap_or(&0.0);
+                let opening_balance = *baseline.get(&account.id).unwrap_or(&0.0);
+                let mut month_delta = projection_math::MonthDelta::default();
 
                 for driver in &drivers {
                     if !driver.is_active || driver.account_id != account.id {
@@ -880,7 +883,11 @@ fn recompute_projection_internal(
                         continue;
                     }
                     let converted = convert_currency(conn, month, driver.amount, &driver.currency, &account.currency)?;
-                    balance += converted;
+                    if driver.kind == "planned_event" {
+                        month_delta.planned_events += converted;
+                    } else {
+                        month_delta.recurring += converted;
+                    }
                 }
 
                 for correction in &corrections {
@@ -892,11 +899,11 @@ fn recompute_projection_internal(
                             &correction.currency,
                             &account.currency,
                         )?;
-                        balance += converted;
+                        month_delta.corrections += converted;
                     }
                 }
 
-                balance
+                projection_math::next_balance(opening_balance, month_delta)
             };
 
             baseline.insert(account.id.clone(), value);
@@ -1416,7 +1423,7 @@ fn set_monthly_close(state: tauri::State<AppState>, input: MonthlyCloseInput) ->
 
         let projected = *projected_map.get(&row.account_id).unwrap_or(&0.0);
         let actual = row.closing_balance;
-        let variance = actual - projected;
+        let variance = projection_math::variance(actual, projected);
 
         total_projected_before += convert_currency(&conn, &input.month, projected, &currency, &base_currency)?;
         total_actual += convert_currency(&conn, &input.month, actual, &currency, &base_currency)?;
