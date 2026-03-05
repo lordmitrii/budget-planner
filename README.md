@@ -1,29 +1,28 @@
-# Balance Planner Desktop
+# Balance Planner
 
-Desktop-first monthly balance planner built with Tauri + React + TypeScript.
+Desktop app for monthly balance planning.
 
-## Core workflow
+## Stack
 
-- Enter actual balances once per month (`Monthly Close`)
-- Keep a 24-month forecast driven by recurring/planned scenario drivers
-- Apply quick corrections between closes
-- See actual vs projected timeline and variance
-- Auto-bootstrap from repo seed file (`../data/balance-seed.json`) on first run when DB is empty
+- Tauri v2 (Rust backend + desktop shell)
+- React + TypeScript + Vite (UI)
+- SQLite (local persistence)
 
-## Project structure
+## What it does
 
-- `src-tauri/` Rust backend + SQLite + projection engine + Tauri commands
-- `src/` React frontend screens and forms
-- `shared/` shared TypeScript domain types
-- `../migrations/` SQL migrations used by backend
+- Monthly close workflow (enter actual balances once a month)
+- Forecast timeline (actual vs projected)
+- Forecast drivers (recurring and planned events)
+- Quick corrections between closes
+- Local import/export and backups
 
-## Required tooling
+## Prerequisites
 
-- Node.js 20+
-- Rust toolchain (`rustup`, `cargo`, `rustc`)
-- Tauri prerequisites for your OS (WebKit2GTK on Linux, etc.)
+- Node.js + npm
+- Rust (`rustup`, `cargo`, `rustc`)
+- OS-specific Tauri dependencies (WebKit2GTK on Linux, MSVC Build Tools + Windows SDK on Windows)
 
-## Run in dev
+## Run in development
 
 ```bash
 cd desktop
@@ -31,42 +30,33 @@ npm install
 npm run tauri:dev
 ```
 
-## Frontend-only dev
+Frontend only:
+
+```bash
+cd desktop
+npm run dev
+```
+
+## Build production app
 
 ```bash
 cd desktop
 npm install
-npm run dev
+npm run tauri:build
 ```
 
-## Tests
+Generated installers/binaries are under:
 
-Frontend tests:
+- `desktop/src-tauri/target/release/bundle/`
+
+## Optional checks
 
 ```bash
 cd desktop
-npm run test
+npm test
 ```
-
-Rust tests (when Rust installed):
 
 ```bash
 cd desktop/src-tauri
-cargo test
+cargo test --no-default-features
 ```
-
-## Commands exposed to frontend
-
-- `init_app`
-- `get_dashboard`
-- `list_accounts`
-- `upsert_account`
-- `set_monthly_close`
-- `apply_quick_correction`
-- `upsert_driver`
-- `delete_driver`
-- `recompute_projection`
-- `import_seed_json`
-- `import_excel_tsv`
-- `export_backup`
-- `import_backup`
